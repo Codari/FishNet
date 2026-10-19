@@ -68,6 +68,25 @@ scene outside Build Settings (Addressables, a content directory, a scene loaded 
 clients were asked to load `''`. When that path is empty it uses `scene.name`, which a custom scene
 processor can map to the scene it loads.
 
+### 5. A copy of a placed object loses its SceneId when it is spawned, not when it wakes
+
+Upstream 4.7.3 cleared `SceneId` in `NetworkObject.Awake` whenever `gameObject.scene.buildIndex == -1`,
+meant for an `Instantiate` copy of a placed object (FishNet #1034). That also caught every object
+placed in a scene outside Build Settings: it lost its id before FishNet scanned the scene, and was
+never spawned. The decision moves to `Spawn`, where FishNet has already scanned every loaded scene:
+
+- `Runtime/Object/NetworkObject/NetworkObject.cs`, `Awake`: the clear is deleted.
+- `Runtime/Object/NetworkObject/NetworkObject.Serialized.cs`: a `[NonSerialized] FoundInSceneScan`
+  flag. An `Instantiate` copy never inherits it.
+- `Runtime/Utility/Extension/Scenes.cs`, `GetSceneNetworkObjects`: at run time, sets the flag on each
+  object it returns that has a `SceneId`. FishNet's own scans (a scene loading, the server starting,
+  a client authenticating) all go through it.
+- `Runtime/Managing/Server/Object/ServerObjects.cs`, `Spawn`: `ClearCopiedSceneIds` unsets the
+  `SceneId` of each `NetworkObject` in the spawned hierarchy that has one but no flag.
+
+A copy that already exists when a scan runs is flagged like a placed object. In the same scene as
+its original, the scan reports the duplicate `SceneId` as an error.
+
 ## Versions
 
 `package.json` carries upstream's version plus `+N`, our build of that version: `4.7.4+1`,

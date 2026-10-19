@@ -63,6 +63,12 @@ namespace FishNet.Object
         [SerializeField]
         [HideInInspector]
         internal TransformProperties SerializedTransformProperties = new();
+        /// <summary>
+        /// Codari fork: true once a runtime scene scan found this object in its scene carrying a SceneId, which makes it
+        /// a placed object. Not serialized, so an Instantiate copy never has it.
+        /// </summary>
+        [NonSerialized]
+        internal bool FoundInSceneScan;
         #endregion
 
         #region Private.
