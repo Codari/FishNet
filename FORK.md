@@ -68,6 +68,14 @@ scene outside Build Settings (Addressables, a content directory, a scene loaded 
 clients were asked to load `''`. When that path is empty it uses `scene.name`, which a custom scene
 processor can map to the scene it loads.
 
+## Branches
+
+- `main`, the default branch: released versions, the commits consuming projects pin.
+- `dev`: changes being prepared for the next `+N`, merged into `main` when released.
+- `upstream`: FirstGearGames' `main`, exactly as they publish it. Nothing of ours is ever committed
+  to it, so it only moves by fast-forward, and `git diff upstream main` shows everything this file
+  lists.
+
 ## Versions
 
 `package.json` carries upstream's version plus `+N`, our build of that version: `4.7.4+1`,
@@ -84,15 +92,19 @@ tag: a tag can be moved, a hash cannot.
 Do not use GitHub's **Sync fork** button: it merges upstream straight into `main` with nothing
 checked, and the version is not reset.
 
-1. `git remote add upstream https://github.com/FirstGearGames/FishNet.git` (once), then
-   `git fetch upstream --tags`.
-2. Branch off `main`, e.g. `update/4.7.5`, and merge upstream's new version.
-3. Settle the conflicts. Most are modify/delete on the files deleted above: keep them deleted
+1. Once per clone: `git remote add fishnet https://github.com/FirstGearGames/FishNet.git`. The
+   remote is `fishnet`, not `upstream`, so that `upstream` names only the branch.
+2. Bring `upstream` level with theirs: `git fetch fishnet --tags`, then
+   `git push origin fishnet/main:refs/heads/upstream`. Git refuses that push unless it is a
+   fast-forward, so a commit made on `upstream` by mistake shows up here rather than being merged.
+3. Branch off `main`, e.g. `update/4.7.5`, and merge `upstream`.
+4. Settle the conflicts. Most are modify/delete on the files deleted above: keep them deleted
    (`git rm`). If upstream changed one of the three `FNPostProcessor*.cs.meta` files, keep our GUID.
-4. Look for new UGUI or TextMeshPro uses, and a `com.unity.ugui` line back in `package.json`:
+5. Look for new UGUI or TextMeshPro uses, and a `com.unity.ugui` line back in `package.json`:
    `git grep -n -e "UnityEngine.UI" -e "UnityEngine.EventSystems" -e "TMPro" -e "com.unity.ugui"`.
    Delete or strip what turns up and add it to this file.
-5. Set `package.json` to the new upstream version with `+1`.
-6. Merge into `main`, tag the commit with the version, and push `main` and the tag.
-7. In each consuming project, re-pin the manifest to the new commit hash, open the editor and check
+6. Set `package.json` to the new upstream version with `+1`.
+7. Merge into `main`, tag the commit with the version, and push `main` and the tag. Merge `main`
+   into `dev` too, so the next changes start from the new version.
+8. In each consuming project, re-pin the manifest to the new commit hash, open the editor and check
    that it compiles with no ugui in `packages-lock.json`.
