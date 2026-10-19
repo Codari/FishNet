@@ -113,7 +113,9 @@ namespace FishNet.Managing.Scened
             Handle = scene.GetRawHandle();
 
             string fullPath = SceneUtility.GetScenePathByBuildIndex(scene.buildIndex);
-            FullName = Path.GetFileNameWithoutExtension(fullPath);
+            /* Codari fork: a scene outside Build Settings has no path by build index; send its own name, which a
+             * custom scene processor can load it by (an Addressables address, a content directory map). */
+            FullName = string.IsNullOrEmpty(fullPath) ? scene.name : Path.GetFileNameWithoutExtension(fullPath);
         }
 
         /// <summary>

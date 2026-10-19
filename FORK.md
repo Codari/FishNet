@@ -60,6 +60,14 @@ Needed only while NGO is in the same project, harmless otherwise.
 `Assets/FishNet/Upgrading/` (`MirrorUpgrade.cs`, `UpgradeFromMirrorMenu.cs`) is deleted. It has no
 asmdef, so inside a package Unity reports that it "will not be compiled", and nothing references it.
 
+### 4. A scene outside Build Settings is sent by its name
+
+`Runtime/Managing/Scened/SceneLookupData.cs`, the `SceneLookupData(Scene)` constructor. Upstream
+takes the name from `SceneUtility.GetScenePathByBuildIndex(scene.buildIndex)`, which is empty for a
+scene outside Build Settings (Addressables, a content directory, a scene loaded by path), so
+clients were asked to load `''`. When that path is empty it uses `scene.name`, which a custom scene
+processor can map to the scene it loads.
+
 ## Versions
 
 `package.json` carries upstream's version plus `+N`, our build of that version: `4.7.4+1`,
