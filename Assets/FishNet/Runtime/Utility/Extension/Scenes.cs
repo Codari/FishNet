@@ -52,7 +52,7 @@ namespace FishNet.Utility.Extension
                             nob.GetComponentsInParent(true, nobCacheB);
                             // No extra nobs, only this one.
                             if (nobCacheB.Count == 1 && !TryDisplayDuplicateError(nob))
-                                result.Add(nob);
+                                Add(result, nob);
                         }
                     }
                     // Not first only, add them all.
@@ -63,13 +63,22 @@ namespace FishNet.Utility.Extension
                             if (ignoreUnsetSceneIds && !item.IsSceneObject)
                                 continue;
                             if (!TryDisplayDuplicateError(item))
-                                result.Add(item);
+                                Add(result, item);
                         }
                     }
                 }
             }
 
             CollectionCaches<ulong, NetworkObject>.Store(sceneIds);
+
+            /* Codari fork: an object found in its scene carrying a SceneId at run time is a placed object, and keeps
+             * that SceneId when it is spawned (ServerObjects.Spawn). */
+            static void Add(List<NetworkObject> found, NetworkObject nob)
+            {
+                if (Application.isPlaying && nob.IsSceneObject)
+                    nob.FoundInSceneScan = true;
+                found.Add(nob);
+            }
 
             bool TryDisplayDuplicateError(NetworkObject nob)
             {

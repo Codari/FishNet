@@ -393,8 +393,9 @@ namespace FishNet.Object
                 return;
             }
 
-            if (gameObject.scene.buildIndex == -1)
-                SceneId = 0;
+            /* Codari fork: upstream cleared SceneId here for any scene with build index -1, which caught every object
+             * placed in a scene outside Build Settings. An Instantiate copy of a placed object loses its SceneId in
+             * ServerObjects.Spawn instead, where FoundInSceneScan tells the two apart. See FORK.md. */
 
             SetChildDespawnedState();
         }

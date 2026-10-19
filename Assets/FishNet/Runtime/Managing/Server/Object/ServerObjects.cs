@@ -611,10 +611,30 @@ namespace FishNet.Managing.Server
                 }
             }
 
+            ClearCopiedSceneIds(networkObject);
+
             if (predictedSpawn)
                 NetworkManager.ClientManager.Objects.PredictedSpawn(networkObject, ownerConnection);
             else
                 SpawnWithoutChecks(networkObject, recursiveSpawnCache: null, ownerConnection);
+        }
+
+        /// <summary>
+        /// Codari fork: unsets the SceneId of each NetworkObject in networkObject's hierarchy that is an Instantiate copy of
+        /// a placed object. A copy carries its original's SceneId, but no scene scan found it (FoundInSceneScan), so it
+        /// would otherwise spawn as the placed object. Upstream did this in NetworkObject.Awake by build index.
+        /// </summary>
+        private static void ClearCopiedSceneIds(NetworkObject networkObject)
+        {
+            List<NetworkObject> nobs = CollectionCaches<NetworkObject>.RetrieveList();
+            networkObject.GetComponentsInChildren(includeInactive: true, nobs);
+            foreach (NetworkObject nob in nobs)
+            {
+                if (nob.IsSceneObject && !nob.FoundInSceneScan)
+                    nob.ClearRuntimeSceneObject();
+            }
+
+            CollectionCaches<NetworkObject>.Store(nobs);
         }
 
         /// <summary>
