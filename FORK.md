@@ -92,9 +92,12 @@ tag: a tag can be moved, a hash cannot.
 Do not use GitHub's **Sync fork** button: it merges upstream straight into `main` with nothing
 checked, and the version is not reset.
 
-1. Once per clone: `git remote add fishnet https://github.com/FirstGearGames/FishNet.git`. The
-   remote is `fishnet`, not `upstream`, so that `upstream` names only the branch.
-2. Bring `upstream` level with theirs: `git fetch fishnet --tags`, then
+1. Once per clone: `git remote add fishnet https://github.com/FirstGearGames/FishNet.git` and
+   `git config remote.fishnet.tagOpt --no-tags`. The remote is `fishnet`, not `upstream`, so that
+   `upstream` names only the branch. It fetches no tags because FishNet's are not ours to publish:
+   their `4.7.4` tag is on a first 4.7.4R commit (`a3627529`) that contained FishNet Pro code, which
+   they replaced on `main` (`a2e2c3e1`) without moving the tag. Never push their tags here.
+2. Bring `upstream` level with theirs: `git fetch fishnet`, then
    `git push origin fishnet/main:refs/heads/upstream`. Git refuses that push unless it is a
    fast-forward, so a commit made on `upstream` by mistake shows up here rather than being merged.
 3. Branch off `main`, e.g. `update/4.7.5`, and merge `upstream`.
