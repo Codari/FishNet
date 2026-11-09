@@ -7,6 +7,7 @@ using FishNet.Managing.Timing;
 using FishNet.Managing.Transporting;
 using FishNet.Serializing;
 using FishNet.Transporting;
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
@@ -23,10 +24,44 @@ namespace FishNet.Connection
         /// </summary>
         public EstimatedTick ReplicateTick { get; private set; } = new();
         /// <summary>
+        /// Fewest replicates the server held queued for this connection's objects after a tick, over the timing interval it last sent this connection.
+        /// This is the input delay the connection's replicates stood at the whole interval, which jitter did not use. 0 until a timing update is sent, and while the connection's replicates are not queued.
+        /// Only set on the server.
+        /// </summary>
+        public byte ReplicateQueueFloor { get; private set; }
+        /// <summary>
+        /// Fewest replicates queued after a tick since the last timing update, or UNSET_REPLICATE_QUEUE when none was sampled.
+        /// </summary>
+        private int _replicateQueueLowest = UNSET_REPLICATE_QUEUE;
+        /// <summary>
+        /// Value of _replicateQueueLowest when no queue was sampled.
+        /// </summary>
+        private const int UNSET_REPLICATE_QUEUE = int.MaxValue;
+        /// <summary>
         /// Writers for states.
         /// </summary>
         internal List<PooledWriter> PredictionStateWriters = new();
         internal void Prediction_Initialize(NetworkManager manager, bool asServer) { }
+
+        /// <summary>
+        /// Records how many replicates one of this connection's objects still has queued after the server ran a tick.
+        /// </summary>
+        internal void SampleReplicateQueue(int queued)
+        {
+            if (queued < _replicateQueueLowest)
+                _replicateQueueLowest = queued;
+        }
+
+        /// <summary>
+        /// Ends a timing interval: sets ReplicateQueueFloor from the queues sampled in it and starts the next.
+        /// </summary>
+        /// <returns>The floor, to send with the timing update.</returns>
+        internal byte TakeReplicateQueueFloor()
+        {
+            ReplicateQueueFloor = _replicateQueueLowest == UNSET_REPLICATE_QUEUE ? (byte)0 : (byte)Math.Min(_replicateQueueLowest, byte.MaxValue);
+            _replicateQueueLowest = UNSET_REPLICATE_QUEUE;
+            return ReplicateQueueFloor;
+        }
 
         /// <summary>
         /// Writes a prediction state.
@@ -112,6 +147,8 @@ namespace FishNet.Connection
         {
             StorePredictionStateWriters();
             ReplicateTick.Reset();
+            ReplicateQueueFloor = 0;
+            _replicateQueueLowest = UNSET_REPLICATE_QUEUE;
         }
     }
 }

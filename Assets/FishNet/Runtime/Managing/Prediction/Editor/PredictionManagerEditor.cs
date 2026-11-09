@@ -14,6 +14,8 @@ namespace FishNet.Managing.Predicting.Editing
         private SerializedProperty _createLocalStates;
         private SerializedProperty _stateInterpolation;
         private SerializedProperty _stateOrder;
+        private SerializedProperty _replicateQueuePacing;
+        private SerializedProperty _replicateQueueTarget;
         
         //Server.
         private SerializedProperty _dropExcessiveReplicates;
@@ -28,6 +30,8 @@ namespace FishNet.Managing.Predicting.Editing
             _createLocalStates = serializedObject.FindProperty(nameof(_createLocalStates));
             _stateInterpolation = serializedObject.FindProperty(nameof(_stateInterpolation));
             _stateOrder = serializedObject.FindProperty(nameof(_stateOrder));
+            _replicateQueuePacing = serializedObject.FindProperty(nameof(_replicateQueuePacing));
+            _replicateQueueTarget = serializedObject.FindProperty(nameof(_replicateQueueTarget));
             
             //Server.
             _dropExcessiveReplicates = serializedObject.FindProperty(nameof(_dropExcessiveReplicates));
@@ -67,6 +71,14 @@ namespace FishNet.Managing.Predicting.Editing
             EditorGUILayout.PropertyField(_stateInterpolation);
 
             EditorGUILayout.PropertyField(_stateOrder);
+
+            EditorGUILayout.PropertyField(_replicateQueuePacing);
+            if (_replicateQueuePacing.intValue > 0)
+            {
+                EditorGUI.indentLevel++;
+                EditorGUILayout.PropertyField(_replicateQueueTarget);
+                EditorGUI.indentLevel--;
+            }
             EditorGUI.indentLevel--;
             EditorGUILayout.Space();
 

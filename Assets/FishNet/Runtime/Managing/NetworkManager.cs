@@ -238,8 +238,9 @@ namespace FishNet.Managing
         #region Const.
         /// <summary>
         /// Version of this release.
+        /// Codari's fork adds its build (FORK.md, Versions), and a change to the wire changes it, so peers of different builds are refused at the handshake rather than misreading each other.
         /// </summary>
-        public const string FISHNET_VERSION = "4.7.4"; 
+        public const string FISHNET_VERSION = "4.7.4+3"; 
         /// <summary>
         /// Maximum framerate allowed.
         /// </summary>
