@@ -356,7 +356,7 @@ namespace FishNet.Managing.Predicting
         /// Replicates the server may still hold queued for a client after running a tick's before that client paces its tick to drain the rest.
         /// Each queued replicate is a tick of that client's input delay. While DropExcessiveReplicates is true the server runs one replicate a tick and the client sends one a tick, so a queue a burst of late packets filled never empties by itself.
         /// </summary>
-        [Tooltip("Replicates the server may still hold queued for a client after running a tick's before that client paces its tick to drain the rest. Each queued replicate is a tick of that client's input delay.")]
+        [Tooltip("Replicates the server may still hold queued for a client after running a tick's before that client paces its tick to drain the rest. Each queued replicate is a tick of that client's input delay. Choose it at least the jitter, in ticks, of the client's link to the server: what stands under it is the margin a late packet uses before the server holds a tick with no replicate.")]
         [SerializeField]
         private byte _replicateQueueTarget = 2;
         /// <summary>
@@ -396,21 +396,22 @@ namespace FishNet.Managing.Predicting
         /// <param name = "queueTarget">Replicates the queue may keep.</param>
         /// <param name = "pacingPercent">The most to lengthen a tick by, in percent.</param>
         /// <param name = "ticks">Ticks to spread the drain over.</param>
+        /// <param name = "inFlight">Replicates the client has already not sent by pacing that the floor cannot show yet: what it paced in the round trip since the floor was taken. Without it the drain overshoots the target by the pace times the round trip.</param>
         /// <returns>The fraction to lengthen each tick by, 0 to not pace.</returns>
-        public static double GetReplicateQueuePace(int queueFloor, int queueTarget, int pacingPercent, uint ticks)
+        public static double GetReplicateQueuePace(int queueFloor, int queueTarget, int pacingPercent, uint ticks, double inFlight = 0d)
         {
-            int excess = queueFloor - queueTarget;
-            if (excess <= 0 || pacingPercent <= 0 || ticks == 0)
+            double excess = queueFloor - Math.Max(0d, inFlight) - queueTarget;
+            if (excess <= 0d || pacingPercent <= 0 || ticks == 0)
                 return 0d;
 
             double most = Math.Min(pacingPercent, MAXIMUM_REPLICATE_QUEUE_PACING) / 100d;
-            return Math.Min((double)excess / ticks, most);
+            return Math.Min(excess / ticks, most);
         }
 
         /// <summary>
         /// GetReplicateQueuePace with this manager's target and pacing.
         /// </summary>
-        internal double GetReplicateQueuePace(byte queueFloor, uint ticks) => GetReplicateQueuePace(queueFloor, _replicateQueueTarget, _replicateQueuePacing, ticks);
+        internal double GetReplicateQueuePace(byte queueFloor, uint ticks, double inFlight) => GetReplicateQueuePace(queueFloor, _replicateQueueTarget, _replicateQueuePacing, ticks, inFlight);
 
         /// <summary>
         /// Number of past inputs to send, which is also the number of times to resend final data.

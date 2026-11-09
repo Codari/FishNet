@@ -284,6 +284,18 @@ namespace FishNet.Managing.Timing
         /// </summary>
         private uint _lastReplicateQueueReportTick;
         /// <summary>
+        /// Ticks of replicates this client has not sent because of pacing, over the session: the sum of the pace of every paced tick.
+        /// </summary>
+        private double _replicateQueuePaced;
+        /// <summary>
+        /// _replicateQueuePaced as each LocalTick began, indexed by LocalTick modulo its length, so a report can tell what it has not seen yet.
+        /// </summary>
+        private readonly double[] _replicateQueuePacedAt = new double[REPLICATE_QUEUE_PACED_HISTORY];
+        /// <summary>
+        /// Local ticks of pacing kept to subtract from a report: over 4 seconds at 60 Hz, past any round trip a client stays connected through.
+        /// </summary>
+        private const int REPLICATE_QUEUE_PACED_HISTORY = 256;
+        /// <summary>
         /// Last frame an iteration occurred for incoming.
         /// </summary>
         private int _lastIncomingIterationFrame = -1;
@@ -884,6 +896,9 @@ namespace FishNet.Managing.Timing
         /// </summary>
         private void CountPacedTick()
         {
+            _replicateQueuePaced += _replicateQueuePace;
+            // The client's own tick: pacing is a client's, and LocalTick is the server's Tick on a client host.
+            _replicateQueuePacedAt[_localTick % REPLICATE_QUEUE_PACED_HISTORY] = _replicateQueuePaced;
             if (_replicateQueuePacedTicks == 0)
                 return;
 
@@ -897,15 +912,34 @@ namespace FishNet.Managing.Timing
         /// Paces the client's next timing interval of ticks to drain what the server holds queued of its replicates past the target.
         /// </summary>
         /// <param name = "queueFloor">Fewest replicates the server held queued for this client after a tick, over the last timing interval.</param>
-        private void PaceReplicateQueue(byte queueFloor)
+        /// <param name = "sentThrough">The last of this client's ticks the server had replicates of when it took the floor: the tick the report echoes.</param>
+        private void PaceReplicateQueue(byte queueFloor, uint sentThrough)
         {
             ReplicateQueueFloor = queueFloor;
-            _replicateQueuePace = NetworkManager.PredictionManager.GetReplicateQueuePace(queueFloor, TimingTickInterval);
+            /* The floor holds only the pacing that had reached the server. What this client
+             * paced after the tick the report echoes, a round trip of it, is still on its way
+             * and drains the queue too, so it is not asked for again. */
+            double inFlight = PacedSince(sentThrough);
+            _replicateQueuePace = NetworkManager.PredictionManager.GetReplicateQueuePace(queueFloor, TimingTickInterval, inFlight);
             _replicateQueuePacedTicks = _replicateQueuePace > 0d ? TimingTickInterval : 0;
         }
 
         /// <summary>
-        /// Stops pacing and forgets the server's last report of the queue.
+        /// Ticks of replicates this client has not sent because of pacing since its tick sentThrough: the pacing a report taken then cannot show.
+        /// </summary>
+        private double PacedSince(uint sentThrough)
+        {
+            uint after = sentThrough + 1;
+            uint localTick = _localTick;
+            if (after >= localTick)
+                return 0d;
+
+            uint back = Math.Min(localTick - after, REPLICATE_QUEUE_PACED_HISTORY - 1);
+            return _replicateQueuePaced - _replicateQueuePacedAt[(localTick - back) % REPLICATE_QUEUE_PACED_HISTORY];
+        }
+
+        /// <summary>
+        /// Stops pacing and forgets the server's last report of the queue and the pacing kept for the next one.
         /// </summary>
         private void ResetReplicateQueuePacing()
         {
@@ -914,6 +948,8 @@ namespace FishNet.Managing.Timing
             _replicateQueuePacedTicks = 0;
             _pacedSinceTimingUpdate = false;
             _lastReplicateQueueReportTick = UNSET_TICK;
+            _replicateQueuePaced = 0d;
+            Array.Clear(_replicateQueuePacedAt, 0, _replicateQueuePacedAt.Length);
         }
 
         #region Tick conversions.
@@ -1339,7 +1375,7 @@ namespace FishNet.Managing.Timing
             if (reportTick > _lastReplicateQueueReportTick)
             {
                 _lastReplicateQueueReportTick = reportTick;
-                PaceReplicateQueue(replicateQueueFloor);
+                PaceReplicateQueue(replicateQueueFloor, clientTick);
             }
             /* This should never be possible since the server is sending a tick back
              * that the client previously sent. In other words, the value returned should

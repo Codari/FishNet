@@ -104,10 +104,10 @@ differently except the extra byte and the version string. (Codari/ProjectOmega #
   along with `package.json` (§ Versions). FishNet's own editor code reads only the part before the
   first `.` (`ScriptingDefines`) or compares it whole (the prefab generator's rebuild check).
 - `Runtime/Managing/Prediction/PredictionManager.cs`:
-  - Two client settings, `_replicateQueueTarget` (2) and `_replicateQueuePacing` (0 to 5, in
-    percent; `MAXIMUM_REPLICATE_QUEUE_PACING`), with `Get`/`Set` methods for each, and
-    `GetReplicateQueuePace`, which works out the pace from them. It is public and static, so a project
-    can test it.
+  - Two client settings, `_replicateQueueTarget` (2; its tooltip asks for at least the link's jitter)
+    and `_replicateQueuePacing` (0 to 5, in percent; `MAXIMUM_REPLICATE_QUEUE_PACING`), with
+    `Get`/`Set` methods for each, and `GetReplicateQueuePace`, which works out the pace from them and
+    the pacing in flight (below). It is public and static, so a project can test it.
   - **`ReconcileToStates`, Appended order, while paced:** the client reconciles the newest state that
     can be reconciled, and disposes of the older ones before it. While paced, the server sends its
     states at the server's rate and the client reconciles one per tick of its slower clock, so without
@@ -141,6 +141,22 @@ differently except the extra byte and the version string. (Codari/ProjectOmega #
     `GetPreciseTick`; `TickDelta`, the step every tick simulates, is untouched. The pace ends with its
     last tick (`CountPacedTick`), so a lost update cannot leave a client paced
     (`IsPacingReplicateQueue` while it runs).
+  - **The pacing in flight.** A report's floor shows only the pacing whose replicates had reached the
+    server when it was taken. By the time the report arrives the client has paced about a round trip
+    more, and asking for the floor's whole excess again would drain `excess + rate × RTT`: under the
+    target at 200 ms and dry, a held tick for that player, from about 600 ms at the cap. So the client
+    subtracts what it has paced since the tick the report echoes (`ParseTimingUpdate`'s `clientTick`:
+    the server's estimate of this client's newest packet tick when it sent the report, which bounds
+    the replicates the floor can contain). Every tick adds its pace to a running total
+    (`_replicateQueuePaced`), kept as each tick began in a 256-tick ring (`_replicateQueuePacedAt`);
+    the in-flight amount is the total now less the total as the tick after the echo began
+    (`PacedSince`), clamped to the ring, and `GetReplicateQueuePace` takes it off the floor
+    (`inFlight`). No round-trip estimate is used, and at pacing 0 the total stays 0. Modelled, not
+    measured: with it, a queue of 11 drains to the target of 2 and no lower at round trips of 0 to
+    800 ms; without it, to 1 from 200 ms and to 0 from 600 ms. Left over: during an uplink stall the
+    echo runs on past what arrived, so less is subtracted and the drain can still overshoot by the
+    stall's share. **Choose the target at least the link's jitter in ticks** (its tooltip says so):
+    what stands under it is the margin a late packet uses before the server holds a tick.
   - **Reordering.** A timing update whose packet's server tick is not newer than the last one the
     pacing applied does not pace: it reports an older interval, by a floor already drained past.
     The alignment below still reads it as upstream does.
