@@ -963,9 +963,15 @@ namespace FishNet.Managing.Timing
             if (NetworkManager == null)
                 return 0d;
 
-            double percent = _elapsedTickTime / TickDelta;
-            return percent;
+            return TickPercent;
         }
+
+        /// <summary>
+        /// How far into its next tick this clock is, 0 to 1. While a client paces its tick runs to TickDelta lengthened by the pace,
+        /// so it divides by that, or the last part of every paced tick would read past 1. Not by PacedTickDelta: unpaced, and always
+        /// on the server, this is upstream's _elapsedTickTime / TickDelta exactly, the adjusted delta's own percent left as it was.
+        /// </summary>
+        private double TickPercent => _elapsedTickTime / (TickDelta * (1d + _replicateQueuePace));
 
         /// <summary>
         /// Returns the current elapsed amount for the next tick.

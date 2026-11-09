@@ -105,9 +105,13 @@ differently except the extra byte and the version string. (Codari/ProjectOmega #
   first `.` (`ScriptingDefines`) or compares it whole (the prefab generator's rebuild check).
 - `Runtime/Managing/Prediction/PredictionManager.cs`:
   - Two client settings, `_replicateQueueTarget` (2; its tooltip asks for at least the link's jitter)
-    and `_replicateQueuePacing` (0 to 5, in percent; `MAXIMUM_REPLICATE_QUEUE_PACING`), with
-    `Get`/`Set` methods for each, and `GetReplicateQueuePace`, which works out the pace from them and
-    the pacing in flight (below). It is public and static, so a project can test it.
+    and `_replicateQueuePacing` (0 to 5, in percent; `MAXIMUM_REPLICATE_QUEUE_PACING`). **The cap
+    stays at 5 because of the smoother**: `UniversalTickSmoother.SetMovementMultiplier`, which
+    `NetworkTickSmoother` runs, slows a graphic to no less than 0.95 when not moving immediately, and a
+    tick lengthened 5% needs 1 / 1.05, about 0.952: 0.2% to spare. (Its moving-immediately branch
+    floors at 0.5, so it is not the limit.) Reasoned from the code, not watched in a build. Each
+    setting has `Get`/`Set` methods. `GetReplicateQueuePace` works out the pace from them and the
+    pacing in flight (below); it is public and static, so a project can test it.
   - **`ReconcileToStates`, Appended order, while paced:** the client reconciles the newest state that
     can be reconciled, and disposes of the older ones before it. While paced, the server sends its
     states at the server's rate and the client reconciles one per tick of its slower clock, so without
@@ -138,7 +142,13 @@ differently except the extra byte and the version string. (Codari/ProjectOmega #
     and sets a pace: the excess past the target spread over the next `TimingTickInterval` ticks,
     capped at the pacing percentage. `PacedTickDelta`, the adjusted tick delta lengthened by that
     pace, replaces `_adjustedTickDelta` in `UpdateNormalizedDeltaTime`, `IncreaseTick` and
-    `GetPreciseTick`; `TickDelta`, the step every tick simulates, is untouched. The pace ends with its
+    `GetPreciseTick`; `TickDelta`, the step every tick simulates, is untouched.
+  - **The tick percent.** `GetTickPercentAsDouble`, and `GetTickPercentAsByte` through it, divide
+    `_elapsedTickTime` by `TickDelta` lengthened by the pace (`TickPercent`), so a paced tick reads 0
+    to 1 rather than up to 1.05. This differs from `GetPreciseTick`'s `PacedTickDelta` on purpose:
+    upstream divides the percent by `TickDelta` and the precise tick by `_adjustedTickDelta`, which
+    disagree by the alignment's own percent or so, and that is upstream's to settle. So unpaced, and
+    always on a server, the percent is upstream's `_elapsedTickTime / TickDelta` exactly. The pace ends with its
     last tick (`CountPacedTick`), so a lost update cannot leave a client paced
     (`IsPacingReplicateQueue` while it runs).
   - **The pacing in flight.** A report's floor shows only the pacing whose replicates had reached the

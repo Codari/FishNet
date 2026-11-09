@@ -491,6 +491,9 @@ namespace FishNet.Managing.Predicting
         /// <summary>
         /// Most a client may lengthen its tick, in percent, to drain its replicate queue.
         /// A client paced this much for a whole timing interval falls under 3 ticks behind, inside the 4 past which a timing update resets the client's tick delta.
+        /// Do not raise it past 5: UniversalTickSmoother.SetMovementMultiplier (NetworkTickSmoother's) slows a graphic to no less than 0.95 when not moving immediately,
+        /// and a tick lengthened 5% needs 1 / 1.05, about 0.952, so a smoothed object follows the pacing with 0.2% to spare. Its moving-immediately branch floors at 0.5, so that is not the limit.
+        /// Reasoned from the code, not watched in a build.
         /// </summary>
         public const byte MAXIMUM_REPLICATE_QUEUE_PACING = 5;
         /// <summary>
