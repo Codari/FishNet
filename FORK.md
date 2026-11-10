@@ -87,6 +87,98 @@ never spawned. The decision moves to `Spawn`, where FishNet has already scanned 
 A copy that already exists when a scan runs is flagged like a placed object. In the same scene as
 its original, the scan reports the duplicate `SceneId` as an error.
 
+### 6. A client paces its tick to drain its replicate queue on the server (`4.7.4+3`)
+
+With `_dropExcessiveReplicates` on, the server runs one of a client's queued replicates a tick and the
+client sends one a tick, so a queue that a burst of late packets filled never drains: the client's
+input delay stays at its worst burst so far, up to `_maximumServerReplicates` + 1 ticks. Upstream's
+timing update aligns the client's tick with the server's and never reads the queue. Now the server
+reports the queue's standing depth in the timing update, and the client lengthens its next second of
+ticks just enough to send the excess fewer replicates. No input is lost, and the server still runs
+one replicate a tick. Off by default (`_replicateQueuePacing` 0), and then nothing behaves
+differently except the extra byte and the version string. (Codari/ProjectOmega #459, option 4; OMG-976.)
+
+- `Runtime/Managing/NetworkManager.cs`: `FISHNET_VERSION` is `"4.7.4+3"`. The timing update's wire
+  changed, and FishNet's handshake refuses a peer whose string differs, so a `+2` peer is turned away
+  at connect instead of misreading every timing update. **A change to the wire bumps this string**
+  along with `package.json` (§ Versions). FishNet's own editor code reads only the part before the
+  first `.` (`ScriptingDefines`) or compares it whole (the prefab generator's rebuild check).
+- `Runtime/Managing/Prediction/PredictionManager.cs`:
+  - Two client settings, `_replicateQueueTarget` (2; its tooltip asks for at least the link's jitter)
+    and `_replicateQueuePacing` (0 to 5, in percent; `MAXIMUM_REPLICATE_QUEUE_PACING`). **The cap
+    stays at 5 because of the smoother**: `UniversalTickSmoother.SetMovementMultiplier`, which
+    `NetworkTickSmoother` runs, slows a graphic to no less than 0.95 when not moving immediately, and a
+    tick lengthened 5% needs 1 / 1.05, about 0.952: 0.2% to spare. (Its moving-immediately branch
+    floors at 0.5, so it is not the limit.) Reasoned from the code, not watched in a build. Each
+    setting has `Get`/`Set` methods. `GetReplicateQueuePace` works out the pace from them and the
+    pacing in flight (below); it is public and static, so a project can test it.
+  - **`ReconcileToStates`, Appended order, while paced:** the client reconciles the newest state that
+    can be reconciled, and disposes of the older ones before it. While paced, the server sends its
+    states at the server's rate and the client reconciles one per tick of its slower clock, so without
+    this the backlog grows by the ticks drained, up to `RemoveExcessiveStates`' cap, and stands once
+    the pacing ends: corrections reaching the owner that much later for the rest of the session. The
+    newest state is the server's state after the older ones, so the replay from it covers whatever
+    they corrected. This is chosen over dropping one state per tick drained: it removes only what a
+    newer state supersedes, keeps no count to fall out of step with the states actually sent (a
+    server sends none for an object that has stopped changing), and collapses to one state a tick
+    as Inserted order does, but keeps the newest, whereas Inserted keeps the oldest. Its limit,
+    shared with Inserted order and the cap: with several predicted objects, one whose last resends
+    sit only in the disposed states misses that correction until it changes again (an object that
+    has stopped changing sends no further state).
+    Not paced, nothing changes.
+- `Runtime/Managing/Prediction/Editor/PredictionManagerEditor.cs`: draws both settings under Client.
+- `Runtime/Object/NetworkBehaviour/NetworkBehaviour.Prediction.cs`, `Replicate_NonAuthoritative`: on
+  the server, after each tick's replicate, what is still queued is sampled on the owner
+  (`NetworkConnection.SampleReplicateQueue`). A client host's own objects are not sampled.
+- `Runtime/Connection/NetworkConnection.Prediction.cs`: the fewest queued since the last timing update,
+  **the minimum over every replicate of every object the connection owns**, so one queue that runs dry
+  keeps the client from pacing at all. Each update takes it (`TakeReplicateQueueFloor`) and keeps it as
+  `ReplicateQueueFloor`, 0 when nothing was sampled. That is the delay that stood the whole interval,
+  which jitter did not use.
+- `Runtime/Managing/Timing/TimeManager.cs`:
+  - **The wire.** `TimingUpdate` carries one more byte, the floor, after the tick, so it is now 7
+    bytes.
+  - **The pace.** On a client, `ParseTimingUpdate` keeps the floor (`ReplicateQueueFloor`, public)
+    and sets a pace: the excess past the target spread over the next `TimingTickInterval` ticks,
+    capped at the pacing percentage. `PacedTickDelta`, the adjusted tick delta lengthened by that
+    pace, replaces `_adjustedTickDelta` in `UpdateNormalizedDeltaTime`, `IncreaseTick` and
+    `GetPreciseTick`; `TickDelta`, the step every tick simulates, is untouched.
+  - **The tick percent.** `GetTickPercentAsDouble`, and `GetTickPercentAsByte` through it, divide
+    `_elapsedTickTime` by `TickDelta` lengthened by the pace (`TickPercent`), so a paced tick reads 0
+    to 1 rather than up to 1.05. This differs from `GetPreciseTick`'s `PacedTickDelta` on purpose:
+    upstream divides the percent by `TickDelta` and the precise tick by `_adjustedTickDelta`, which
+    disagree by the alignment's own percent or so, and that is upstream's to settle. So unpaced, and
+    always on a server, the percent is upstream's `_elapsedTickTime / TickDelta` exactly. The pace ends with its
+    last tick (`CountPacedTick`), so a lost update cannot leave a client paced
+    (`IsPacingReplicateQueue` while it runs).
+  - **The pacing in flight.** A report's floor shows only the pacing whose replicates had reached the
+    server when it was taken. By the time the report arrives the client has paced about a round trip
+    more, and asking for the floor's whole excess again would drain `excess + rate × RTT`: under the
+    target at 200 ms and dry, a held tick for that player, from about 600 ms at the cap. So the client
+    subtracts what it has paced since the tick the report echoes (`ParseTimingUpdate`'s `clientTick`:
+    the server's estimate of this client's newest packet tick when it sent the report, which bounds
+    the replicates the floor can contain). Every tick adds its pace to a running total
+    (`_replicateQueuePaced`), kept as each tick began in a 256-tick ring (`_replicateQueuePacedAt`);
+    the in-flight amount is the total now less the total as the tick after the echo began
+    (`PacedSince`), clamped to the ring, and `GetReplicateQueuePace` takes it off the floor
+    (`inFlight`). No round-trip estimate is used, and at pacing 0 the total stays 0. Modelled, not
+    measured: with it, a queue of 11 drains to the target of 2 and no lower at round trips of 0 to
+    800 ms; without it, to 1 from 200 ms and to 0 from 600 ms. Left over: during an uplink stall the
+    echo runs on past what arrived, so less is subtracted and the drain can still overshoot by the
+    stall's share. **Choose the target at least the link's jitter in ticks** (its tooltip says so):
+    what stands under it is the margin a late packet uses before the server holds a tick.
+  - **Reordering.** A timing update whose packet's server tick is not newer than the last one the
+    pacing applied does not pace: it reports an older interval, by a floor already drained past.
+    The alignment below still reads it as upstream does.
+  - **The alignment.** A timing update after a paced tick does not nudge `_adjustedTickDelta`, since
+    the ticks the client fell behind are the pacing's own. It still sets `Tick`, and still resets
+    past a difference of 4. A whole interval at the 5 % cap falls 2.86 ticks behind, and the
+    difference is a whole number with a tick of noise either way, so **the cap leaves no room for
+    noise**: on a jittery link a paced second can read as 4 and past, and FishNet then resets the
+    adjusted delta to `TickDelta`, as it does for any extreme difference. Harmless: the pace is kept
+    apart from the adjusted delta, and the alignment nudges back from nominal as it always has.
+  - **A client that stops** forgets the pace and the last report (`ResetReplicateQueuePacing`).
+
 ## Branches
 
 - `main`, the default branch: released versions, the commits consuming projects pin.
@@ -101,6 +193,9 @@ its original, the scan reports the duplicate `SceneId` as an error.
 `4.7.4+2`, then `4.7.5+1` after merging upstream's 4.7.5. `+N` is SemVer build metadata ("the same
 version, built differently"), so it does not read as a pre-release. Each release is tagged with
 the same string.
+
+`NetworkManager.FISHNET_VERSION` carries the same string from `4.7.4+3` on (§ 6): FishNet refuses a
+peer whose string differs, so peers of two builds whose wire differs are refused at connect.
 
 UPM decides what to install by the commit in `packages-lock.json`, not by this version, so a
 consuming project updates by changing the `#<commit>` in its manifest. Pin the hash rather than the
@@ -125,7 +220,8 @@ checked, and the version is not reset.
 5. Look for new UGUI or TextMeshPro uses, and a `com.unity.ugui` line back in `package.json`:
    `git grep -n -e "UnityEngine.UI" -e "UnityEngine.EventSystems" -e "TMPro" -e "com.unity.ugui"`.
    Delete or strip what turns up and add it to this file.
-6. Set `package.json` to the new upstream version with `+1`.
+6. Set `package.json` to the new upstream version with `+1`, and `FISHNET_VERSION`
+   (`Runtime/Managing/NetworkManager.cs`) to the same string: the merge brings upstream's back.
 7. Merge into `main`, tag the commit with the version, and push `main` and the tag. Merge `main`
    into `dev` too, so the next changes start from the new version.
 8. In each consuming project, re-pin the manifest to the new commit hash, open the editor and check

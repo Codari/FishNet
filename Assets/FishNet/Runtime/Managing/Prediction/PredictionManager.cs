@@ -353,6 +353,67 @@ namespace FishNet.Managing.Predicting
         public byte GetMaximumServerReplicates() => _maximumServerReplicates;
 
         /// <summary>
+        /// Replicates the server may still hold queued for a client after running a tick's before that client paces its tick to drain the rest.
+        /// Each queued replicate is a tick of that client's input delay. While DropExcessiveReplicates is true the server runs one replicate a tick and the client sends one a tick, so a queue a burst of late packets filled never empties by itself.
+        /// </summary>
+        [Tooltip("Replicates the server may still hold queued for a client after running a tick's before that client paces its tick to drain the rest. Each queued replicate is a tick of that client's input delay. Choose it at least the jitter, in ticks, of the client's link to the server: what stands under it is the margin a late packet uses before the server holds a tick with no replicate.")]
+        [SerializeField]
+        private byte _replicateQueueTarget = 2;
+        /// <summary>
+        /// The most, in percent, a client lengthens its tick to drain the replicates the server holds for it past the queue target. 0 never paces.
+        /// Pacing loses no input and leaves the server running one replicate a tick: the client only sends fewer of them a second while it paces.
+        /// </summary>
+        [Tooltip("The most, in percent, a client lengthens its tick to drain the replicates the server holds for it past the queue target. 0 never paces.")]
+        [Range(0, MAXIMUM_REPLICATE_QUEUE_PACING)]
+        [SerializeField]
+        private byte _replicateQueuePacing = 0;
+
+        /// <summary>
+        /// Replicates the server may still hold queued for a client after running a tick's before that client paces its tick to drain the rest.
+        /// </summary>
+        public byte GetReplicateQueueTarget() => _replicateQueueTarget;
+
+        /// <summary>
+        /// Sets the replicates the server may still hold queued for a client before that client paces its tick. The client's own value is the one used.
+        /// </summary>
+        public void SetReplicateQueueTarget(byte value) => _replicateQueueTarget = value;
+
+        /// <summary>
+        /// The most, in percent, a client lengthens its tick to drain its queue on the server. 0 never paces.
+        /// </summary>
+        public byte GetReplicateQueuePacing() => _replicateQueuePacing;
+
+        /// <summary>
+        /// Sets the most, in percent, a client lengthens its tick to drain its queue on the server. The client's own value is the one used.
+        /// </summary>
+        public void SetReplicateQueuePacing(byte value) => _replicateQueuePacing = (byte)Mathf.Min(value, MAXIMUM_REPLICATE_QUEUE_PACING);
+
+        /// <summary>
+        /// How much longer a client makes each of its next ticks so the server's queue of its replicates drains to the target over them.
+        /// Over that many ticks, each lengthened by the returned fraction, the server runs that fraction of them more replicates than the client sends: the excess, unless the pacing caps it.
+        /// </summary>
+        /// <param name = "queueFloor">Fewest replicates the server held queued for the client after a tick, over the interval it last reported.</param>
+        /// <param name = "queueTarget">Replicates the queue may keep.</param>
+        /// <param name = "pacingPercent">The most to lengthen a tick by, in percent.</param>
+        /// <param name = "ticks">Ticks to spread the drain over.</param>
+        /// <param name = "inFlight">Replicates the client has already not sent by pacing that the floor cannot show yet: what it paced in the round trip since the floor was taken. Without it the drain overshoots the target by the pace times the round trip.</param>
+        /// <returns>The fraction to lengthen each tick by, 0 to not pace.</returns>
+        public static double GetReplicateQueuePace(int queueFloor, int queueTarget, int pacingPercent, uint ticks, double inFlight = 0d)
+        {
+            double excess = queueFloor - Math.Max(0d, inFlight) - queueTarget;
+            if (excess <= 0d || pacingPercent <= 0 || ticks == 0)
+                return 0d;
+
+            double most = Math.Min(pacingPercent, MAXIMUM_REPLICATE_QUEUE_PACING) / 100d;
+            return Math.Min(excess / ticks, most);
+        }
+
+        /// <summary>
+        /// GetReplicateQueuePace with this manager's target and pacing.
+        /// </summary>
+        internal double GetReplicateQueuePace(byte queueFloor, uint ticks, double inFlight) => GetReplicateQueuePace(queueFloor, _replicateQueueTarget, _replicateQueuePacing, ticks, inFlight);
+
+        /// <summary>
         /// Number of past inputs to send, which is also the number of times to resend final data.
         /// </summary>
         internal byte RedundancyCount => (byte)(_stateInterpolation + 1);
@@ -427,6 +488,14 @@ namespace FishNet.Managing.Predicting
         /// Maximum amount of replicate queue size.
         /// </summary>
         private const byte MAXIMUM_REPLICATE_QUEUE_SIZE = byte.MaxValue;
+        /// <summary>
+        /// Most a client may lengthen its tick, in percent, to drain its replicate queue.
+        /// A client paced this much for a whole timing interval falls under 3 ticks behind, inside the 4 past which a timing update resets the client's tick delta.
+        /// Do not raise it past 5: UniversalTickSmoother.SetMovementMultiplier (NetworkTickSmoother's) slows a graphic to no less than 0.95 when not moving immediately,
+        /// and a tick lengthened 5% needs 1 / 1.05, about 0.952, so a smoothed object follows the pacing with 0.2% to spare. Its moving-immediately branch floors at 0.5, so that is not the limit.
+        /// Reasoned from the code, not watched in a build.
+        /// </summary>
+        public const byte MAXIMUM_REPLICATE_QUEUE_PACING = 5;
         /// <summary>
         /// Recommended state interpolation value when using appended state order.
         /// </summary>
@@ -596,6 +665,21 @@ namespace FishNet.Managing.Predicting
                 /* The state to reconcile will always be
                  * the first entry and removing ones not needed. */
                 statePacket = _reconcileStates.Dequeue();
+
+                /* While this client paces its tick to drain its replicate queue on the server,
+                 * states arrive faster than the one a tick it reconciles, and the backlog would
+                 * stand once the pacing ends: server corrections reaching the owner later for
+                 * the rest of the session. So while paced, reconcile the newest state that can
+                 * be reconciled. It is the server's state after the older ones, so the replay
+                 * from it covers whatever they corrected. Nothing changes while not paced. */
+                if (tm.IsPacingReplicateQueue)
+                {
+                    while (_reconcileStates.Count > 0 && CanStateBeReconciled(_reconcileStates.Peek()))
+                    {
+                        DisposeOfStatePacket(statePacket);
+                        statePacket = _reconcileStates.Dequeue();
+                    }
+                }
             }
 
             bool CanStateBeReconciled(StatePacket lStatePacket)

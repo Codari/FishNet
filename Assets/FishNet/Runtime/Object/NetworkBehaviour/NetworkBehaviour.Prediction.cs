@@ -695,6 +695,13 @@ namespace FishNet.Object
                 }
             }
 
+            /* What is still queued after this tick's replicate ran is input delay
+             * the owner's replicates stand at. The server tells the owner the
+             * fewest over each timing interval, and the owner paces its tick to
+             * drain what stands past the target. */
+            if (isServerStarted && !Owner.IsLocalClient)
+                Owner.SampleReplicateQueue(replicatesQueue.Count);
+
             //Performs a replicate using default data.
             void ReplicateDefaultData()
             {

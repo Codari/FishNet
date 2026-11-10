@@ -108,6 +108,11 @@ namespace FishNet.Managing.Timing
         /// Returns half value of RoundTripTime rounded to nearest whole.
         /// </summary>
         public long HalfRoundTripTime => (long)Math.Round((double)RoundTripTime / 2d);
+        /// <summary>
+        /// Fewest replicates the server held queued for this client after a tick, over the interval before its last timing update.
+        /// This is the input delay the client's replicates stood at, in ticks, past what jitter used. 0 until a timing update arrives. Only set on clients which are not also the server.
+        /// </summary>
+        public byte ReplicateQueueFloor { get; private set; }
 
         /// <summary>
         /// True if multiple ticks had occured within the past specified time.
@@ -262,6 +267,34 @@ namespace FishNet.Managing.Timing
         /// Internal deltaTime for clients. Controlled by the server.
         /// </summary>
         private double _adjustedTickDelta;
+        /// <summary>
+        /// Fraction the client lengthens its tick by to drain its replicate queue on the server. Set by a timing update.
+        /// </summary>
+        private double _replicateQueuePace;
+        /// <summary>
+        /// Client ticks left to lengthen by _replicateQueuePace. Pacing ends with them, so a lost timing update cannot leave a client paced.
+        /// </summary>
+        private uint _replicateQueuePacedTicks;
+        /// <summary>
+        /// True if a client tick was paced since the last timing update. The ticks that tick fell behind the server are then the pacing's, not drift to correct.
+        /// </summary>
+        private bool _pacedSinceTimingUpdate;
+        /// <summary>
+        /// Server tick of the packet that carried the last timing update the pacing applied.
+        /// </summary>
+        private uint _lastReplicateQueueReportTick;
+        /// <summary>
+        /// Ticks of replicates this client has not sent because of pacing, over the session: the sum of the pace of every paced tick.
+        /// </summary>
+        private double _replicateQueuePaced;
+        /// <summary>
+        /// _replicateQueuePaced as each LocalTick began, indexed by LocalTick modulo its length, so a report can tell what it has not seen yet.
+        /// </summary>
+        private readonly double[] _replicateQueuePacedAt = new double[REPLICATE_QUEUE_PACED_HISTORY];
+        /// <summary>
+        /// Local ticks of pacing kept to subtract from a report: over 4 seconds at 60 Hz, past any round trip a client stays connected through.
+        /// </summary>
+        private const int REPLICATE_QUEUE_PACED_HISTORY = 256;
         /// <summary>
         /// Last frame an iteration occurred for incoming.
         /// </summary>
@@ -472,6 +505,7 @@ namespace FishNet.Managing.Timing
                     LastPacketTick.ResetTicks();
                 _pingStopwatch.Stop();
                 ClientUptime = 0f;
+                ResetReplicateQueuePacing();
 
                 // Only reset ticks if also not server.
                 if (!NetworkManager.IsServerStarted)
@@ -707,7 +741,7 @@ namespace FishNet.Managing.Timing
         /// </summary>
         private void UpdateNormalizedDeltaTime()
         {
-            double timePerSimulation = NetworkManager.IsServerStarted ? TickDelta : _adjustedTickDelta;
+            double timePerSimulation = NetworkManager.IsServerStarted ? TickDelta : PacedTickDelta;
             double frameDelta = Time.unscaledDeltaTime;
             if (timePerSimulation <= 0d)
             {
@@ -757,7 +791,7 @@ namespace FishNet.Managing.Timing
             bool isClient = NetworkManager.IsClientStarted;
             bool isServer = NetworkManager.IsServerStarted;
 
-            double timePerSimulation = isServer ? TickDelta : _adjustedTickDelta;
+            double timePerSimulation = isServer ? TickDelta : PacedTickDelta;
             if (timePerSimulation == 0d)
             {
                 NetworkManager.LogWarning($"Simulation delta cannot be 0. Network timing will not continue.");
@@ -841,8 +875,81 @@ namespace FishNet.Managing.Timing
                     
                     //Cache localTick to ObserverManager for performance.
                     NetworkManager.ObserverManager.LocalTick = LocalTick;
+
+                    CountPacedTick();
                 }
             } while (_elapsedTickTime >= timePerSimulation);
+        }
+
+        /// <summary>
+        /// Client tick delta: the one timing updates align, lengthened while the server holds a standing queue of this client's replicates.
+        /// </summary>
+        private double PacedTickDelta => _adjustedTickDelta * (1d + _replicateQueuePace);
+
+        /// <summary>
+        /// True while this client lengthens its ticks to drain its replicate queue on the server.
+        /// </summary>
+        internal bool IsPacingReplicateQueue => _replicateQueuePacedTicks > 0;
+
+        /// <summary>
+        /// Counts a tick against the pacing a timing update asked for, ending the pacing with its last tick.
+        /// </summary>
+        private void CountPacedTick()
+        {
+            _replicateQueuePaced += _replicateQueuePace;
+            // The client's own tick: pacing is a client's, and LocalTick is the server's Tick on a client host.
+            _replicateQueuePacedAt[_localTick % REPLICATE_QUEUE_PACED_HISTORY] = _replicateQueuePaced;
+            if (_replicateQueuePacedTicks == 0)
+                return;
+
+            _pacedSinceTimingUpdate = true;
+            _replicateQueuePacedTicks--;
+            if (_replicateQueuePacedTicks == 0)
+                _replicateQueuePace = 0d;
+        }
+
+        /// <summary>
+        /// Paces the client's next timing interval of ticks to drain what the server holds queued of its replicates past the target.
+        /// </summary>
+        /// <param name = "queueFloor">Fewest replicates the server held queued for this client after a tick, over the last timing interval.</param>
+        /// <param name = "sentThrough">The last of this client's ticks the server had replicates of when it took the floor: the tick the report echoes.</param>
+        private void PaceReplicateQueue(byte queueFloor, uint sentThrough)
+        {
+            ReplicateQueueFloor = queueFloor;
+            /* The floor holds only the pacing that had reached the server. What this client
+             * paced after the tick the report echoes, a round trip of it, is still on its way
+             * and drains the queue too, so it is not asked for again. */
+            double inFlight = PacedSince(sentThrough);
+            _replicateQueuePace = NetworkManager.PredictionManager.GetReplicateQueuePace(queueFloor, TimingTickInterval, inFlight);
+            _replicateQueuePacedTicks = _replicateQueuePace > 0d ? TimingTickInterval : 0;
+        }
+
+        /// <summary>
+        /// Ticks of replicates this client has not sent because of pacing since its tick sentThrough: the pacing a report taken then cannot show.
+        /// </summary>
+        private double PacedSince(uint sentThrough)
+        {
+            uint after = sentThrough + 1;
+            uint localTick = _localTick;
+            if (after >= localTick)
+                return 0d;
+
+            uint back = Math.Min(localTick - after, REPLICATE_QUEUE_PACED_HISTORY - 1);
+            return _replicateQueuePaced - _replicateQueuePacedAt[(localTick - back) % REPLICATE_QUEUE_PACED_HISTORY];
+        }
+
+        /// <summary>
+        /// Stops pacing and forgets the server's last report of the queue and the pacing kept for the next one.
+        /// </summary>
+        private void ResetReplicateQueuePacing()
+        {
+            ReplicateQueueFloor = 0;
+            _replicateQueuePace = 0d;
+            _replicateQueuePacedTicks = 0;
+            _pacedSinceTimingUpdate = false;
+            _lastReplicateQueueReportTick = UNSET_TICK;
+            _replicateQueuePaced = 0d;
+            Array.Clear(_replicateQueuePacedAt, 0, _replicateQueuePacedAt.Length);
         }
 
         #region Tick conversions.
@@ -856,9 +963,15 @@ namespace FishNet.Managing.Timing
             if (NetworkManager == null)
                 return 0d;
 
-            double percent = _elapsedTickTime / TickDelta;
-            return percent;
+            return TickPercent;
         }
+
+        /// <summary>
+        /// How far into its next tick this clock is, 0 to 1. While a client paces its tick runs to TickDelta lengthened by the pace,
+        /// so it divides by that, or the last part of every paced tick would read past 1. Not by PacedTickDelta: unpaced, and always
+        /// on the server, this is upstream's _elapsedTickTime / TickDelta exactly, the adjusted delta's own percent left as it was.
+        /// </summary>
+        private double TickPercent => _elapsedTickTime / (TickDelta * (1d + _replicateQueuePace));
 
         /// <summary>
         /// Returns the current elapsed amount for the next tick.
@@ -895,7 +1008,7 @@ namespace FishNet.Managing.Timing
             if (NetworkManager == null)
                 return default;
 
-            double delta = NetworkManager.IsServerStarted ? TickDelta : _adjustedTickDelta;
+            double delta = NetworkManager.IsServerStarted ? TickDelta : PacedTickDelta;
             double percent = _elapsedTickTime / delta;
 
             return new(tick, percent);
@@ -1220,6 +1333,7 @@ namespace FishNet.Managing.Timing
 
                     writer.WritePacketIdUnpacked(PacketId.TimingUpdate);
                     writer.WriteTickUnpacked(item.PacketTick.Value());
+                    writer.WriteUInt8Unpacked(item.TakeReplicateQueueFloor());
                     item.SendToClient((byte)Channel.Unreliable, writer.GetArraySegment());
                     writer.Clear();
                 }
@@ -1230,7 +1344,7 @@ namespace FishNet.Managing.Timing
                 if (_networkTrafficStatistics != null)
                 {
                     // Timing updates are always a flat amount of data.
-                    int written = 6 * NetworkManager.ServerManager.Clients.Count;
+                    int written = 7 * NetworkManager.ServerManager.Clients.Count;
                     _networkTrafficStatistics.AddOutboundPacketIdData(PacketId.TimingUpdate, string.Empty, written, gameObject: null, asServer: true);
                 }
                 #endif
@@ -1247,14 +1361,28 @@ namespace FishNet.Managing.Timing
             if (_networkTrafficStatistics != null)
             {
                 // Timing updates are always a flat amount of data.
-                int written = 6;
+                int written = 7;
                 _networkTrafficStatistics.AddInboundPacketIdData(PacketId.TimingUpdate, string.Empty, written, gameObject: null, asServer: false);
             }
             #endif
             uint clientTick = reader.ReadTickUnpacked();
+            byte replicateQueueFloor = reader.ReadUInt8Unpacked();
             // Don't adjust timing on server.
             if (NetworkManager.IsServerStarted)
                 return;
+
+            /* Ticks this client fell behind the server while paced are the pacing's
+             * own, so they are not corrected as drift below. */
+            bool paced = _pacedSinceTimingUpdate;
+            _pacedSinceTimingUpdate = false;
+            /* A report that arrives behind a newer one is about an older interval, and
+             * would pace by a floor already drained past. */
+            uint reportTick = LastPacketTick.LastRemoteTick;
+            if (reportTick > _lastReplicateQueueReportTick)
+            {
+                _lastReplicateQueueReportTick = reportTick;
+                PaceReplicateQueue(replicateQueueFloor, clientTick);
+            }
             /* This should never be possible since the server is sending a tick back
              * that the client previously sent. In other words, the value returned should
              * always be in the past. */
@@ -1285,7 +1413,7 @@ namespace FishNet.Managing.Timing
                 _adjustedTickDelta = TickDelta;
             }
             // Otherwise adjust the delta marginally.
-            else if (difference != 0)
+            else if (difference != 0 && !paced)
             {
                 /* A negative tickDifference indicates the client is
                  * moving too fast, while positive indicates too slow. */
